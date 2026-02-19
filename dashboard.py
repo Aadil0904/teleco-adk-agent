@@ -49,7 +49,7 @@ async def main():
             print("-" * 75)
             continue
 
-        print(f"\n🤖 Connecting to Multi-Agent System...", end="", flush=True)
+        print(f"\n🤖 Initializing NOC AI Orchestrator...", end="", flush=True)
         user_msg = genai_types.Content(role="user", parts=[genai_types.Part(text=user_input)])
         
         async for event in runner.run_async(user_id="admin", session_id=session_id, new_message=user_msg):
