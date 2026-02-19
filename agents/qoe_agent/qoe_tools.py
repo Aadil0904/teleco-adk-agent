@@ -1,84 +1,128 @@
 import pandas as pd
 import os
-from datetime import datetime
 
-# 1. Load Data
+# 1. Load All Data
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "../../data")
 
-print("⏳ Loading QoE Data...")
+print("⏳ Loading Complete Telecom Data (UDR, IPDR, CDR, EDR)...")
 try:
     UDR_DF = pd.read_csv(os.path.join(DATA_DIR, "udr_sample.csv"))
     IPDR_DF = pd.read_csv(os.path.join(DATA_DIR, "ipdr_sample.csv"))
-    print("✅ QoE Data Loaded.")
+    CDR_DF = pd.read_csv(os.path.join(DATA_DIR, "cdr_sample.csv"))
+    EDR_DF = pd.read_csv(os.path.join(DATA_DIR, "edr_sample.csv"))
+    print("✅ All Data Loaded.")
 except Exception as e:
     print(f"❌ Error loading data: {e}")
-    UDR_DF = pd.DataFrame()
-    IPDR_DF = pd.DataFrame()
+    UDR_DF, IPDR_DF, CDR_DF, EDR_DF = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-def check_user_profile(msisdn: str) -> dict:
+def scan_all_risks(limit=20):
+    """
+    Scans the entire database and calculates the 4 risk pillars for each user.
+    """
+    if UDR_DF.empty: return []
+
+    # 1. Base Users & Quota Limits
+    users = UDR_DF[['msisdn', 'plan_name', 'monthly_quota_gb', 'is_premium']].copy()
+    users['msisdn'] = users['msisdn'].astype(str)
+
+    # 2. Stream Risk (Video bytes from IPDR)
+    video_df = IPDR_DF[IPDR_DF['app_category'].isin(['Netflix', 'YouTube'])]
+    stream_usage = video_df.groupby('msisdn')['bytes_downlink'].sum() / (1024**3)
+    stream_usage = stream_usage.reset_index(name='video_gb')
+    stream_usage['msisdn'] = stream_usage['msisdn'].astype(str)
+
+    # 3. Voice Risk (Short calls / Drops from CDR)
+    drops = CDR_DF[CDR_DF['duration_sec'] < 15]
+    voice_drops = drops.groupby('msisdn').size().reset_index(name='dropped_calls')
+    voice_drops['msisdn'] = voice_drops['msisdn'].astype(str)
+
+    # 4. Total Usage for Quota Risk
+    total_usage = IPDR_DF.groupby('msisdn')['bytes_downlink'].sum() / (1024**3)
+    total_usage = total_usage.reset_index(name='total_gb')
+    total_usage['msisdn'] = total_usage['msisdn'].astype(str)
+
+    # 5. Billing Risk (EDR charges)
+    charges = EDR_DF[EDR_DF['charge_amount_inr'] > 0]
+    billing = charges.groupby('msisdn').size().reset_index(name='charge_events')
+    billing['msisdn'] = billing['msisdn'].astype(str)
+
+    # Merge everything together
+    df = users.merge(stream_usage, on='msisdn', how='left')
+    df = df.merge(voice_drops, on='msisdn', how='left')
+    df = df.merge(total_usage, on='msisdn', how='left')
+    df = df.merge(billing, on='msisdn', how='left')
+    df.fillna(0, inplace=True)
+
+    # Calculate Quota Percentage
+    df['monthly_quota_gb'] = df['monthly_quota_gb'].replace(0, 1) # Prevent division by zero
+    df['Quota_Risk_Pct'] = (df['total_gb'] / df['monthly_quota_gb']) * 100
+    
+    # Sort by Issue Score
+    df['Issue_Score'] = df['Quota_Risk_Pct'] + (df['dropped_calls'] * 10) + (df['charge_events'] * 20)
+    df = df.sort_values(by='Issue_Score', ascending=False).head(limit)
+
+    results = []
+    for _, row in df.iterrows():
+        v_risk = "HIGH" if row['dropped_calls'] >= 4 else ("MEDIUM" if row['dropped_calls'] >= 2 else "LOW")
+        s_risk = "HIGH" if row['video_gb'] > 15 else ("MEDIUM" if row['video_gb'] > 5 else "LOW")
+        
+        q_pct = row['Quota_Risk_Pct']
+        q_risk = f"HIGH ({q_pct:.0f}%)" if q_pct > 90 else (f"MEDIUM ({q_pct:.0f}%)" if q_pct > 75 else f"LOW ({q_pct:.0f}%)")
+        
+        # --- THE FIX: Synced Billing Logic ---
+        if row['is_premium'] and row['charge_events'] >= 2:
+            b_risk = "SYSTEM MISMATCH"
+        elif not row['is_premium'] and row['charge_events'] >= 5:
+            b_risk = "HIGH OVERAGES"
+        else:
+            b_risk = "NONE"
+
+        results.append({
+            "MSISDN": row['msisdn'],
+            "Voice": v_risk,
+            "Stream": s_risk,
+            "Quota": q_risk,
+            "Billing": b_risk
+        })
+    return results
+
+def get_comprehensive_user_context(msisdn: str) -> str:
+    """
+    Feeds the LLM the EXACT same labels the dashboard uses (Single Source of Truth).
+    """
     user = UDR_DF[UDR_DF['msisdn'].astype(str) == str(msisdn)]
-    if user.empty: return {}
-    return user.iloc[0].to_dict()
-
-def analyze_streaming_usage(msisdn: str) -> str:
-    """
-    Returns a rich 'User Persona' string including habits, device, and spending power.
-    """
-    # 1. Get Profile
-    user_profile = check_user_profile(msisdn)
-    if not user_profile: return f"User {msisdn} not found."
-
-    plan_name = user_profile.get('plan_name', 'Unknown')
-    device = user_profile.get('device_type', 'Unknown Device')
-    quota_limit = user_profile.get('monthly_quota_gb', 0)
-
-    # 2. Filter IPDR for Video
-    user_logs = IPDR_DF[
-        (IPDR_DF['msisdn'].astype(str) == str(msisdn)) & 
-        (IPDR_DF['app_category'].isin(['Netflix', 'YouTube', 'Prime', 'Disney+']))
-    ].copy()
+    if user.empty: return f"User {msisdn} not found."
     
-    if user_logs.empty:
-        return f"User {msisdn} has minimal video usage."
-
-    # 3. Calculate "Flavor" Stats
-    total_gb = round(user_logs['bytes_downlink'].sum() / (1024**3), 2)
-    quota_used_percent = round((total_gb / quota_limit) * 100, 1)
+    plan = user.iloc[0]['plan_name']
+    premium = user.iloc[0]['is_premium']
+    quota = user.iloc[0]['monthly_quota_gb']
     
-    # top_app = user_logs['app_category'].mode()[0] # The app they use most
-    # (Since dummy data is random, we just grab the most frequent one)
-    top_app = user_logs['app_category'].value_counts().idxmax()
-
-    # 4. Infer "Time of Day" Persona (Mock logic since we didn't parse full dates in global load)
-    # We use the random record_id or hash to deterministically assign a "Habit" for the demo
-    # This ensures the same user always gets the same "Time" persona.
-    user_hash = hash(msisdn) % 3
-    if user_hash == 0:
-        habit = "Late Night Binger (10 PM - 2 AM)"
-    elif user_hash == 1:
-        habit = "Evening Commuter (6 PM - 8 PM)"
+    # Raw Stats
+    drops = len(CDR_DF[(CDR_DF['msisdn'].astype(str) == str(msisdn)) & (CDR_DF['duration_sec'] < 15)])
+    video_gb = IPDR_DF[(IPDR_DF['msisdn'].astype(str) == str(msisdn)) & (IPDR_DF['app_category'].isin(['Netflix', 'YouTube']))]['bytes_downlink'].sum() / (1024**3)
+    total_gb = IPDR_DF[IPDR_DF['msisdn'].astype(str) == str(msisdn)]['bytes_downlink'].sum() / (1024**3)
+    charges = len(EDR_DF[(EDR_DF['msisdn'].astype(str) == str(msisdn)) & (EDR_DF['charge_amount_inr'] > 0)])
+    
+    # Calculate exact UI Labels
+    v_risk = "HIGH" if drops >= 4 else ("MEDIUM" if drops >= 2 else "LOW")
+    s_risk = "HIGH" if video_gb > 15 else ("MEDIUM" if video_gb > 5 else "LOW")
+    q_pct = (total_gb / quota) * 100 if quota > 0 else 0
+    q_risk = f"HIGH ({q_pct:.0f}%)" if q_pct > 90 else (f"LOW ({q_pct:.0f}%)")
+    
+    # Precise Billing Labels
+    if premium and charges >= 2:
+        b_risk = "SYSTEM MISMATCH (Premium user incorrectly charged)"
+    elif not premium and charges >= 5:
+        b_risk = "HIGH OVERAGES (Basic user hitting pay-as-you-go fees)"
     else:
-        habit = "Weekend Warrior (Heavy Sunday usage)"
+        b_risk = "NONE"
 
-    # 5. Construct the "Rich Context" for LLM
     return f"""
-    User Persona Report for {msisdn}:
-    -----------------------------------
-    - Device: {device} (High-end devices suggest higher willingness to pay).
-    - Current Plan: {plan_name}
-    - Data Health: {quota_used_percent}% used.
-    
-    - Streaming Habit: {habit}
-    - Favorite App: {top_app}
-    - Total Consumption: {total_gb} GB
-    
-    (Technical Note: If they stream at night, suggest 'Night Boosters'. If they commute, suggest 'Mobility Passes'.)
+    Dashboard Risk Status for {msisdn}:
+    - Voice Risk: {v_risk} ({drops} drops detected)
+    - Stream Risk: {s_risk} ({video_gb:.2f} GB video usage)
+    - Quota Risk: {q_risk}
+    - Billing Issue: {b_risk}
+    - Plan Context: {plan} (Premium: {premium})
     """
-
-def scan_for_risky_users(limit=20):
-    # (Same as before)
-    video_traffic = IPDR_DF[IPDR_DF['app_category'].isin(['Netflix', 'YouTube'])]
-    if video_traffic.empty: return []
-    usage = video_traffic.groupby('msisdn')['bytes_downlink'].sum()
-    return (usage / (1024**3)).sort_values(ascending=False).head(limit)
