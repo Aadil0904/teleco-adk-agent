@@ -12,7 +12,7 @@ START_DATE = datetime(2024, 1, 1)
 print("🚀 Initializing Dummy Data Generator...")
 
 # --- 1. Generate Base Users (UDR) ---
-# We create a mix of "Premium" and "Standard" users to test personalization.
+# Create a mix of "Premium" and "Standard" users to test personalization.
 print(f"Generating {NUM_USERS} unique users...")
 
 msisdns = [f"91{random.randint(7000000000, 9999999999)}" for _ in range(NUM_USERS)]
@@ -41,7 +41,7 @@ print("✅ UDR Generated (User Profiles)")
 
 
 # --- 2. Generate Network Traffic (CDR) ---
-# We simulate "Hot Cells" by forcing 40% of traffic into just 5 Cell IDs.
+# Simulate "Hot Cells" by forcing 40% of traffic into just 5 Cell IDs.
 print(f"Generating {NUM_RECORDS} CDR records...")
 
 hot_cells = ["CELL_001_MUMBAI", "CELL_002_DELHI", "CELL_003_BANGALORE"]
@@ -49,7 +49,7 @@ normal_cells = [f"CELL_{i:03d}_GENERIC" for i in range(10, 100)]
 
 cdr_data = []
 for _ in range(NUM_RECORDS):
-    # FIXED PROBABILITIES:
+    # PROBABILITIES:
     # 18 hours of "low traffic" (2% each) = 36%
     # 6 hours of "peak traffic" (varied) = 64%
     # Total = 100%

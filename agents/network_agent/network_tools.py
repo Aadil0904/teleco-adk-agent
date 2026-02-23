@@ -20,7 +20,7 @@ def check_tower_status(location_keyword: str) -> str:
     Returns traffic load and congestion status.
     """
     # 1. Find matching cells in the 'cell_id' column
-    # We look for rows where cell_id contains the keyword (case-insensitive)
+    # Look for rows where cell_id contains the keyword (case-insensitive)
     matches = CDR_DF[CDR_DF['cell_id'].str.contains(location_keyword, case=False, na=False)]
     
     if matches.empty:
@@ -31,7 +31,7 @@ def check_tower_status(location_keyword: str) -> str:
     session_count = matches['cell_id'].value_counts().max()
     
     # 3. Determine Congestion (Simple Logic)
-    # In our dummy data, 'Hot' cells have lots of rows.
+    # In the dummy data, 'Hot' cells have lots of rows.
     status = "HEALTHY"
     action = "None"
     

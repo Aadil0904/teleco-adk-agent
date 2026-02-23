@@ -70,7 +70,7 @@ def scan_all_risks(limit=20):
         q_pct = row['Quota_Risk_Pct']
         q_risk = f"HIGH ({q_pct:.0f}%)" if q_pct > 90 else (f"MEDIUM ({q_pct:.0f}%)" if q_pct > 75 else f"LOW ({q_pct:.0f}%)")
         
-        # --- THE FIX: Synced Billing Logic ---
+        # --- Synced Billing Logic ---
         if row['is_premium'] and row['charge_events'] >= 2:
             b_risk = "SYSTEM MISMATCH"
         elif not row['is_premium'] and row['charge_events'] >= 5:
